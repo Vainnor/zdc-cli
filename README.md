@@ -15,16 +15,23 @@ Prereqs
 - Network access
 - Optional: system PDF viewer for `chart` open behavior
 
-Install / build
+Quick install
+- From crates.io (after publishing):
 ```bash
-# build
-cargo build --release
+cargo install zdc
+```
 
-# run from source
-cargo run -- <args>
+- From Git:
+```bash
+cargo install --git https://github.com/<you>/zdc --tag v0.1.0
+```
 
-# install locally
+- From a local checkout:
+```bash
 cargo install --path .
+# or build
+cargo build --release
+./target/release/zdc ...
 ```
 
 Quick usage
