@@ -222,7 +222,7 @@ async fn fetch_charts_from_api(
     airport: &str,
 ) -> Result<Vec<ChartInfo>, Box<dyn std::error::Error>> {
     let base = base.trim_end_matches('/');
-    let url = format!("{}/charts?apt={}", base, airport.to_uppercase());
+    let url = format!("{}/charts?airport={}", base, airport.to_uppercase());
     let resp = client
         .get(&url)
         .header("User-Agent", "ZDC-Chart-CLI/1.0")
@@ -233,42 +233,112 @@ async fn fetch_charts_from_api(
     }
     let body = resp.text().await?;
     let json: serde_json::Value = serde_json::from_str(&body)?;
-    let out = Vec::new();
-    if let Some(map) = json.as_object() {
-        for (_key, val) in map {
-            if let Some(arr) = val.as_array() {
-                for item in arr {
-                    let _ci = ChartInfo {
-                        chart_name: item
-                            .get("chart_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        chart_code: item
-                            .get("chart_code")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        pdf_path: item
-                            .get("pdf_path")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        _faa_ident: item
-                            .get("faa_ident")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        _icao_ident: item
-                            .get("icao_ident")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
+    let mut out: Vec<ChartInfo> = Vec::new();
+
+    // helper to extract strings from multiple possible keys
+    let get_str = |obj: &serde_json::Map<String, serde_json::Value>, keys: &[&str]| {
+        keys.iter().find_map(|&k| obj.get(k).and_then(|v| v.as_str()).map(|s| s.to_string()))
+    };
+
+    // top-level airport_data (fallback for faa/icao)
+    let (top_faa, top_icao) = match json.get("airport_data") {
+        Some(serde_json::Value::Object(map)) => (
+            map.get("faa_ident").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            map.get("icao_ident").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        ),
+        _ => ("".to_string(), "".to_string()),
+    };
+
+    // Primary shape: { "charts": { "airport_diagram": [ ... ], "approach": [ ... ], ... } }
+    if let Some(serde_json::Value::Object(charts_map)) = json.get("charts") {
+        for (category, arrv) in charts_map.iter() {
+            if let serde_json::Value::Array(arr) = arrv {
+                for item in arr.iter().filter_map(|v| v.as_object()) {
+                    let chart_name =
+                        get_str(item, &["chart_name", "title", "name", "chartTitle", "chart_title"])
+                            .unwrap_or_default();
+                    let pdf_path = get_str(item, &["pdf_url", "pdf", "pdf_path", "pdf_name", "file", "filename", "href", "link"])
+                        .unwrap_or_default();
+                    let faa = item
+                        .get("faa_ident")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| top_faa.clone());
+                    let icao = item
+                        .get("icao_ident")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| top_icao.clone());
+                    let chart_code = match category.as_str() {
+                        "airport_diagram" => "APD".to_string(),
+                        "departure" => "DP".to_string(),
+                        "arrival" => "STAR".to_string(),
+                        "approach" => "IAP".to_string(),
+                        "general" => "GEN".to_string(),
+                        other => other.to_uppercase(),
                     };
+                    out.push(ChartInfo {
+                        chart_name,
+                        chart_code,
+                        pdf_path,
+                        _faa_ident: faa,
+                        _icao_ident: icao,
+                    });
                 }
             }
         }
+        return Ok(out);
     }
+
+    // Fallback shapes: top-level arrays or nested maps
+    match json {
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter().filter_map(|v| v.as_object()) {
+                let chart_name =
+                    get_str(item, &["chart_name", "title", "name"]).unwrap_or_default();
+                let pdf_path =
+                    get_str(item, &["pdf_url", "pdf", "pdf_path", "pdf_name", "file", "filename"])
+                        .unwrap_or_default();
+                let faa = get_str(item, &["faa_ident", "faa", "ident"]).unwrap_or_default();
+                let icao = get_str(item, &["icao_ident", "icao"]).unwrap_or_default();
+                out.push(ChartInfo {
+                    chart_name,
+                    chart_code: "".to_string(),
+                    pdf_path,
+                    _faa_ident: faa,
+                    _icao_ident: icao,
+                });
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (_k, v) in map.iter() {
+                if let serde_json::Value::Array(arr) = v {
+                    for item in arr.iter().filter_map(|v| v.as_object()) {
+                        let chart_name =
+                            get_str(item, &["chart_name", "title", "name"]).unwrap_or_default();
+                        let pdf_path = get_str(
+                            item,
+                            &["pdf_url", "pdf", "pdf_path", "pdf_name", "file", "filename"],
+                        )
+                            .unwrap_or_default();
+                        let faa = get_str(item, &["faa_ident", "faa", "ident"]).unwrap_or_default();
+                        let icao = get_str(item, &["icao_ident", "icao"]).unwrap_or_default();
+                        out.push(ChartInfo {
+                            chart_name,
+                            chart_code: "".to_string(),
+                            pdf_path,
+                            _faa_ident: faa,
+                            _icao_ident: icao,
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
     Ok(out)
 }
 
@@ -896,12 +966,25 @@ async fn handle_chart(
     _airac: Option<i32>,
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let default_base = "https://charts-api.oakartcc.org/v1";
+    let default_base = "https://api-v2.aviationapi.com/v2";
     let base = std::env::var("ZDC_CHARTS_BASE").unwrap_or_else(|_| default_base.into());
 
+    if verbose {
+        eprintln!("charts base: {}", base);
+        eprintln!("airport arg: {}", airport);
+        eprintln!("query tokens: {:?}", query);
+    }
+
+    if verbose {
+        eprintln!("GET {}/charts?apt={}", base, airport.to_uppercase());
+    }
     let mut charts = fetch_charts_from_api(client, &base, airport).await?;
+
     if charts.is_empty() && airport.len() == 3 && !airport.starts_with('K') {
-        let k_air = format!("K{}", airport);
+        let k_air = format!("K{}", airport.to_uppercase());
+        if verbose {
+            eprintln!("retry GET {}/charts?apt={}", base, k_air);
+        }
         charts = fetch_charts_from_api(client, &base, &k_air).await?;
     }
 
