@@ -12,11 +12,13 @@ use strsim::normalized_levenshtein;
 
 #[derive(Parser)]
 #[command(name = "zdc")]
-#[command(version = "1.0.0")]
+#[command(version = "0.1.2")]
 #[command(about = "A Cli tool for vZDC", long_about = None)]
 struct Args {
     #[arg(short, long)]
     verbose: bool,
+    #[arg(long = "no-open")]
+    no_open: bool,
     #[arg(short = 'p', long)]
     pubs: Option<String>,
     #[arg(short, long)]
@@ -964,6 +966,7 @@ async fn handle_chart(
     query: &[String],
     link_only: bool,
     _airac: Option<i32>,
+    auto_open: bool,
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let default_base = "https://api-v2.aviationapi.com/v2";
@@ -975,11 +978,7 @@ async fn handle_chart(
         eprintln!("query tokens: {:?}", query);
     }
 
-    if verbose {
-        eprintln!("GET {}/charts?apt={}", base, airport.to_uppercase());
-    }
     let mut charts = fetch_charts_from_api(client, &base, airport).await?;
-
     if charts.is_empty() && airport.len() == 3 && !airport.starts_with('K') {
         let k_air = format!("K{}", airport.to_uppercase());
         if verbose {
@@ -1019,7 +1018,7 @@ async fn handle_chart(
     let pdf_urls: Vec<String> =
         pages.into_iter().map(|p| absolute_pdf_url(&base, &p.pdf_path)).collect();
 
-    if link_only {
+    if link_only || !auto_open {
         for u in pdf_urls.iter() {
             println!("{}", u);
         }
@@ -1074,7 +1073,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect();
 
         if let Some(url) = normalized.get(&alias_norm) {
-            println!("{}", url);
+            if args.no_open {
+                println!("{}", url);
+            } else {
+                match open::that(url) {
+                    Ok(_) => {}
+                    Err(_) => println!("{}", url),
+                }
+            }
             return Ok(());
         } else {
             eprintln!("Unknown pub '{}'. Run --list to see aliases.", alias);
@@ -1169,7 +1175,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 link,
                 airac,
             } => {
-                handle_chart(&client, &airport, &query, link, airac, args.verbose).await?;
+                handle_chart(
+                    &client,
+                    &airport,
+                    &query,
+                    link,
+                    airac,
+                    /* auto_open = */ !args.no_open,
+                    args.verbose,
+                )
+                    .await?;
             }
         }
     }
