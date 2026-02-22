@@ -23,7 +23,7 @@ cargo install zdc
 
 - From Git:
 ```bash
-cargo install --git https://github.com/<you>/zdc --tag v0.1.0
+cargo install --git https://github.com/vainnor/zdc --tag v0.1.0
 ```
 
 - From a local checkout:
